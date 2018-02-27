@@ -60,7 +60,7 @@ class IbScrubGui(tkinter.Tk):
 
         label.grid(column=0, row=1, columnspan=2, sticky='EW', padx=10, pady=10)
         self.working_dir_label_var.set("Please select working directory with IB Details, Service Contracts Expiring, score.xlsx, etc")
-        # ttk.Checkbutton(self, text="Include Flash Tab", variable=self.include_flash).grid(row=3, sticky='W')
+        # ttk.Checkbutton(self, text="Include Flash Tab", variable=self.include_fl).grid(row=3, sticky='W')
         # ttk.Checkbutton(self, text="Get New Asups", variable=self.new_asups).grid(row=4, sticky='W')
 
         self.generate_button['state'] = 'disabled'
@@ -107,5 +107,5 @@ class IbScrubGui(tkinter.Tk):
 
 if __name__ == "__main__":
     app = IbScrubGui(None)
-    app.title('IB Team Installed Base Scrub v1.6.7')
+    app.title('IB Team Installed Base Scrub v1.8')
     app.mainloop()

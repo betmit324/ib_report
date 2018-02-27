@@ -1,6 +1,6 @@
 from openpyxl import *
 from openpyxl.styles import PatternFill, Border, Side, Alignment, Protection, Font, Color
-from openpyxl.cell import get_column_letter
+from openpyxl.utils import get_column_letter
 from openpyxl.comments import Comment
 import time
 import datetime
@@ -12,6 +12,8 @@ import platform
 from netapp_systems import *
 from my_logging import print_to_log
 import pickle
+import pandas as pd
+import xlrd
 
 logging.basicConfig(filename='ib_scrub.log', filemode='w', level=logging.DEBUG)
 debug_it = 0
@@ -105,6 +107,7 @@ short_s_c_filename = "sc.xlsx"
 installed_base_report_filename = "Installed%20Base%20Details_Installed%20Base%20Details.xlsx"
 short_i_b_filename = "ib.xlsx"
 score_report_filesname = "score.xlsx"
+sam_report_filename = "sam.xlsx"
 installed_base_hostname_list_filename = "ib.txt"
 missing_hostname_filename = "serial_to_hostname.txt"
 companies_to_ignore_filename = "companies_to_ignore.txt"
@@ -114,6 +117,7 @@ groups_to_ignore_filename = "groups_to_ignore.txt"
 sites_to_ignore_filename = "sites_to_ignore.txt"
 ib_notes_filename = "ib_notes.txt"
 override_filename = "overrides.txt"
+solidfire_tag_text= "Solidfire Service Tag Number"
 
 
 def check_input_files():
@@ -171,6 +175,33 @@ def check_response_profiles():
 
     print_to_log("Using ranked_response_profiles.txt: " + ', '.join(HardwareContract.response_profiles_list))
 
+ #Betsy working on skip_entitlements_check for these products 5/3
+    try:
+        with open("products_to_skip_entitlement_check.txt", encoding='utf-8') as f:
+            lines = f.read().splitlines()
+            HardwareContract.products_to_exclude = []
+            for line in lines:
+                if line[0] != '#':
+                    temp_words = line.strip().split(',', 2)
+                    if len(line.strip()) > 0:
+                        HardwareContract.products_to_exclude.append(line.strip())
+                        print_to_log("Override entitlements for" + line.strip())
+                    else:
+                        print_to_log("Unable to override" + line.strip())
+                else:
+                    print_to_log("Unable to override entitlements for any product")
+
+    except FileNotFoundError:
+        HardwareContract.products_to_exclude = [
+            "CL-LICENSEMANAGER"
+        ]
+        print_to_log("Creating products_to_skip_entitlement_check.txt")
+        with open("products_to_skip_entitlement_check.txt", 'w', encoding='utf-8') as f:
+            print("# products to exclude entitlements", file=f)
+            print("# Note this will remove products (entitled or not)", file=f)
+            print("CL-LICENSEMANAGER", file=f)
+    print_to_log("Using products_to_skip_entitlement_check.txt: " + ', '.join(HardwareContract.products_to_exclude))
+
 
 class IbDetails:
 
@@ -217,73 +248,207 @@ class IbDetails:
         self.process_sites_to_ignore()
         self.process_ib_list()
 
-        if os.path.isfile(short_i_b_filename):
+        if os.path.isfile(sam_report_filename):
+            use_sam_report = True
+            site_text = "Installed At Site"
+            cluster_serial_text = "Cluster Serial No"
+            asup_date_text = "Last ASUP"
+            product_family_text = "Product Family"
+            platform_text = "Model"
+            controller_eos_date_text = "Controller EOS"
+            pvr_flag_text = "EOS PVR"
+            pvr_date_text = "PVR End"
+            first_eos_date_text = "First EOS"
+            age_text = "System Age Years"
+            ha_pair_flag_text = "HA Pair"
+            company_text = "Serial Number Owner"
+            print_to_log("Found sam.xlsx.")
+            print_to_log("the following fields are being replaced with new headings")
+            print_to_log(company_text)
+            print_to_log(site_text)
+            print_to_log(product_family_text)
+            print_to_log(platform_text)
+            print_to_log(ha_pair_flag_text)
+            print_to_log(asup_date_text)
+        else:
+            use_sam_report = False
+            print_to_log("sam.xlsx not found, will use legacy reports.")
+
+        if use_sam_report:
+            #try:
+            self.ib_workbook = load_workbook(filename=sam_report_filename)
+            assert "IB Products Detail" in self.ib_workbook.get_sheet_names(), "IB Products Detail missing from SAM report"
+            #except:
+                #print_to_log("Problem reading IB Products Detail, please try downloading a new sam.xlsx before running IB Scrub again")
+                #return
+
+            self.ib_worksheet = self.ib_workbook.get_sheet_by_name("IB Products Detail")
+
+            if "IB Products Detail" in self.ib_worksheet.cell('A2').value and \
+                    "Installed At Site" in self.ib_worksheet['B5'].value and \
+                    self.ib_worksheet['E5'].value == "Serial Number" and \
+                    self.ib_worksheet['AD5'].value == "# of Disks":
+                print_to_log("Reading IB Products Detail tab from SAM report")
+            else:
+                print_to_log("Unexpected SAM report format, scrub cancelled")
+                return
+
+            my_row = 5
+            my_column = 2
+
+            while my_column <= last_data_column:
+                self.ib_column_heading[self.ib_worksheet.cell(row=my_row, column=my_column).value] = my_column
+                self.column_width[self.ib_worksheet.cell(row=my_row, column=my_column).value] = self.ib_worksheet.column_dimensions[get_column_letter(my_column)].width
+                my_column += 1
+            self.column_width[company_text] = self.column_width[site_text]
+
+            # my_row = 9
+
+            # save formatting
+            self.title_font = self.ib_worksheet['A2'].font.copy()
+            self.heading_font = self.ib_worksheet['B5'].font.copy()
+            self.heading_alignment = self.ib_worksheet['B5'].alignment.copy()
+            self.heading_fill = self.ib_worksheet['B5'].fill.copy()
+            self.heading_border = self.ib_worksheet['B5'].border.copy()
+            self.data_cell_font = self.ib_worksheet['B6'].font.copy()
+            self.data_cell_alignment = self.ib_worksheet['B6'].alignment.copy()
+            self.data_cell_fill = self.ib_worksheet['B6'].fill.copy()
+            self.data_cell_border = self.ib_worksheet['B6'].border.copy()
+        else:
+            if os.path.isfile(short_i_b_filename):
+                try:
+                    self.ib_workbook = load_workbook(filename=short_i_b_filename)
+                    assert data_sheet_name in self.ib_workbook.get_sheet_names(), data_sheet_name + " missing from Installed Base report"
+                except:
+                    print_to_log("Problem reading IB Details file, please try downloading a new version before running IB Scrub again")
+                    return
+            else:
+                print_to_log("Missing IB report " + short_i_b_filename)
+                return
+
+            self.ib_worksheet = self.ib_workbook.get_sheet_by_name(data_sheet_name)
+
+            if "Installed Base Details" in self.ib_worksheet.cell(ib_report_name_cell).value and \
+                "3.0" in self.ib_worksheet.cell(ib_report_name_cell).value and \
+                self.ib_worksheet['A8'].value == "Serial Number Owner Company" and \
+                self.ib_worksheet['E8'].value == "Serial Number" and \
+                    self.ib_worksheet['AD8'].value == "# of Disks":
+                print_to_log("Reading Installed Base report v3.0")
+            else:
+                print_to_log("Unexpected Installed Base report format, scrub cancelled")
+                return
+
+            my_row = column_heading_row
+            my_column = 1
+
+            while my_column <= last_data_column:
+                self.ib_column_heading[self.ib_worksheet.cell(row=my_row, column=my_column).value] = my_column
+                self.column_width[self.ib_worksheet.cell(row=my_row, column=my_column).value] = self.ib_worksheet.column_dimensions[get_column_letter(my_column)].width
+                my_column += 1
+
+            my_row = 9
+
+            # save formatting
+            self.title_font = self.ib_worksheet['A7'].font.copy()
+            self.heading_font = self.ib_worksheet['A8'].font.copy()
+            self.heading_alignment = self.ib_worksheet['A8'].alignment.copy()
+            self.heading_fill = self.ib_worksheet['A8'].fill.copy()
+            self.heading_border = self.ib_worksheet['A8'].border.copy()
+            self.data_cell_font = self.ib_worksheet['A9'].font.copy()
+            self.data_cell_alignment = self.ib_worksheet['A9'].alignment.copy()
+            self.data_cell_fill = self.ib_worksheet['A9'].fill.copy()
+            self.data_cell_border = self.ib_worksheet['A9'].border.copy()
+
+        if use_sam_report:
+
+            #pandas, first try to see if sam and e-series exists, otherwise try just ontap
             try:
-                self.ib_workbook = load_workbook(filename=short_i_b_filename)
-                assert data_sheet_name in self.ib_workbook.get_sheet_names(), data_sheet_name + " missing from Installed Base report"
+                df = pd.read_excel("sam.xlsx", sheetname="IB Products Detail", dtype='object')
+                df.columns = df.iloc[3]
+                df.columns = df.columns.fillna("Serial Number Owner")
+                blank_sn = df["Serial Number"].isnull()
+                blank_sites = df["Installed At Site"].isnull()
+                temp = df[blank_sn & ~blank_sites]
+                df["Serial Number Owner"] = temp["Installed At Site"]
+                df["Serial Number Owner"] = df["Serial Number Owner"].fillna(method='ffill')
+                header_row_pandas = df["Serial Number"] == "Serial Number"
+                ontap_ib_final = df[~blank_sn & ~header_row_pandas]
+                ontap_ib_final.fillna("", inplace=True)
+                df = pd.read_excel("sam2.xlsx", sheetname="IB Products Detail", dtype='object')
+                df.columns = df.iloc[3]
+                df.columns = df.columns.fillna("Serial Number Owner")
+                blank_sn = df["Serial Number"].isnull()
+                blank_sites = df["Installed At Site"].isnull()
+                temp = df[blank_sn & ~blank_sites]
+                df["Serial Number Owner"] = temp["Installed At Site"]
+                df["Serial Number Owner"] = df["Serial Number Owner"].fillna(method='ffill')
+                header_row_pandas = df["Serial Number"] == "Serial Number"
+                eseries_ib_final = df[~blank_sn & ~header_row_pandas]
+                eseries_ib_final.fillna("", inplace=True)
+                ib_final = ontap_ib_final.append(eseries_ib_final).drop_duplicates(keep='first', subset="Serial Number")
+            except:
+                df = pd.read_excel("sam.xlsx", sheetname="IB Products Detail", dtype='object')
+                df.columns = df.iloc[3]
+                df.columns = df.columns.fillna("Serial Number Owner")
+                blank_sn = df["Serial Number"].isnull()
+                blank_sites = df["Installed At Site"].isnull()
+                temp = df[blank_sn & ~blank_sites]
+                df["Serial Number Owner"] = temp["Installed At Site"]
+                df["Serial Number Owner"] = df["Serial Number Owner"].fillna(method='ffill')
+                header_row_pandas = df["Serial Number"] == "Serial Number"
+                ib_final = df[~blank_sn & ~header_row_pandas]
+                ib_final.fillna("", inplace=True)
+
+            #read eseries
+
+            #combine to create - ib_final
+
+            header_row = list(ib_final.columns)
+            data = []
+            count = 0
+            for index, row in ib_final.iterrows():
+                count += 1
+                if count % 1000 == 0:
+                    print_to_log("Current row: " + str(count))
+                record = {}
+                for key in header_row:
+                    record[key]=row[key]
+
+                if record['Installed At Site'] and 'Installed At Site' in record['Installed At Site']:
+                    continue
+
+                if record['Serial Number'] is not None and len(record['Serial Number']) > 0 and record['Serial Number'] is not 'Serial Number':
+                    # If we have a good Serial Number, go ahead and save the data
+                    data.append(record)
+
+
+            print_to_log("Done reading IB Products Detail")
+
+        else:
+            print_to_log("Reading " + short_i_b_filename)
+            try:
+                wb = load_workbook(short_i_b_filename, read_only=True)
             except:
                 print_to_log("Problem reading IB Details file, please try downloading a new version before running IB Scrub again")
                 return
-        else:
-            print_to_log("Missing IB report " + short_i_b_filename)
-            return
-
-        self.ib_worksheet = self.ib_workbook.get_sheet_by_name(data_sheet_name)
-
-        if "Installed Base Details" in self.ib_worksheet.cell(ib_report_name_cell).value and \
-            "3.0" in self.ib_worksheet.cell(ib_report_name_cell).value and \
-            self.ib_worksheet['A8'].value == "Serial Number Owner Company" and \
-            self.ib_worksheet['E8'].value == "Serial Number" and \
-                self.ib_worksheet['AD8'].value == "# of Disks":
-            print_to_log("Reading Installed Base report v3.0")
-        else:
-            print_to_log("Unexpected Installed Base report format, scrub cancelled")
-            return
-
-        my_row = column_heading_row
-        my_column = 1
-
-        while my_column <= last_data_column:
-            self.ib_column_heading[self.ib_worksheet.cell(row=my_row, column=my_column).value] = my_column
-            self.column_width[self.ib_worksheet.cell(row=my_row, column=my_column).value] = self.ib_worksheet.column_dimensions[get_column_letter(my_column)].width
-            my_column += 1
-
-        my_row = 9
-
-        # save formatting
-        self.title_font = self.ib_worksheet['A7'].font.copy()
-        self.heading_font = self.ib_worksheet['A8'].font.copy()
-        self.heading_alignment = self.ib_worksheet['A8'].alignment.copy()
-        self.heading_fill = self.ib_worksheet['A8'].fill.copy()
-        self.heading_border = self.ib_worksheet['A8'].border.copy()
-        self.data_cell_font = self.ib_worksheet['A9'].font.copy()
-        self.data_cell_alignment = self.ib_worksheet['A9'].alignment.copy()
-        self.data_cell_fill = self.ib_worksheet['A9'].fill.copy()
-        self.data_cell_border = self.ib_worksheet['A9'].border.copy()
+            sheet = wb.active
+            rows = sheet.rows
+            header_row = [cell.value for cell in next(rows)]
+            while header_row[0] != company_text:
+                header_row = [cell.value for cell in next(rows)]
+            data = []
+            count = 0
+            for row in rows:
+                count += 1
+                if count % 1000 == 0:
+                    print_to_log("Current row: " + str(count))
+                record = {}
+                for key, cell in zip(header_row, row):
+                    record[key] = cell.value
+                data.append(record)
+            print_to_log("Done reading ib.xlsx")
 
         self.serials_skipped = 0
-
-        print_to_log("Reading " + short_i_b_filename)
-        try:
-            wb = load_workbook(short_i_b_filename, read_only=True)
-        except:
-            print_to_log("Problem reading IB Details file, please try downloading a new version before running IB Scrub again")
-            return
-        sheet = wb.active
-        rows = sheet.rows
-        header_row = [cell.value for cell in next(rows)]
-        while header_row[0] != company_text:
-            header_row = [cell.value for cell in next(rows)]
-        data = []
-        count = 0
-        for row in rows:
-            count += 1
-            if count % 1000 == 0:
-                print_to_log("Current row: " + str(count))
-            record = {}
-            for key, cell in zip(header_row, row):
-                record[key] = cell.value
-            data.append(record)
 
         for row in data:
 
@@ -441,60 +606,136 @@ class IbDetails:
                 if group:
                     print(group, file=f)
 
-        if os.path.isfile(short_s_c_filename):
+        if use_sam_report:
             try:
-                self.sc_workbook = load_workbook(filename=short_s_c_filename)
-                assert data_sheet_name in self.sc_workbook.get_sheet_names(), data_sheet_name + " missing from Service Contracts report"
+                assert "Service Contracts" in self.ib_workbook.get_sheet_names(), "Service Contracts missing from SAM report"
+            except:
+                print_to_log("Problem reading Service Contracts, please try downloading a new sam.xlsx before running IB Scrub again")
+                return
+
+            self.sc_worksheet = self.ib_workbook.get_sheet_by_name("Service Contracts")
+
+            if "Service Contracts" in self.sc_worksheet.cell("A2").value and \
+                "Serial Number Owner" in self.sc_worksheet['B4'].value and \
+                self.sc_worksheet['G4'].value == "Serial Number" and \
+                    (self.sc_worksheet['R4'].value == "HW Service Level Status" or self.sc_worksheet['R4'].value == "Support Edge Offering Status"):
+                print_to_log("Reading Service Contracts tab from SAM report")
+                site_text = "Installed At Site Name"
+                print_to_log("the following is being replaced with new headings")
+                print_to_log(site_text)
+
+            else:
+                print_to_log("Unexpected Service Contracts, scrub cancelled")
+                return
+            hw_service_level_status_text = self.sc_worksheet['R4'].value
+            my_row = 4  # column headings
+            my_column = 1
+
+            while my_column <= sc_last_data_column + 1:  # sam.xlsx has blank column A
+                if self.sc_worksheet.cell(row=my_row, column=my_column).value:
+                    self.sc_column_heading[self.sc_worksheet.cell(row=my_row, column=my_column).value] = my_column
+                    self.column_width[self.sc_worksheet.cell(row=my_row, column=my_column).value] = self.sc_worksheet.column_dimensions[get_column_letter(my_column)].width
+                    self.column_width["NRD " + self.sc_worksheet.cell(row=my_row, column=my_column).value] = self.sc_worksheet.column_dimensions[get_column_letter(my_column)].width
+                my_column += 1
+
+            my_row = 9
+        else:
+            if os.path.isfile(short_s_c_filename):
+                try:
+                    self.sc_workbook = load_workbook(filename=short_s_c_filename)
+                    assert data_sheet_name in self.sc_workbook.get_sheet_names(), data_sheet_name + " missing from Service Contracts report"
+                except:
+                    print_to_log("Problem reading Service Contracts file, please try downloading a new version before running IB Scrub again")
+                    return
+            else:
+                print_to_log("Missing SC report " + short_s_c_filename)
+                return
+
+            self.sc_worksheet = self.sc_workbook.get_sheet_by_name(data_sheet_name)
+
+            if "Service Contracts" in self.sc_worksheet.cell(sc_report_name_cell).value and \
+                self.sc_worksheet['A8'].value == "Serial Number Owner Company" and \
+                self.sc_worksheet['F8'].value == "Serial Number" and \
+                    (self.sc_worksheet['S8'].value == "HW Service Level Status" or self.sc_worksheet['S8'].value == "Support Edge Offering Status"):
+                print_to_log("Reading Service Contracts report")
+            else:
+                print_to_log("Unexpected Service Contracts, scrub cancelled")
+                return
+            hw_service_level_status_text = self.sc_worksheet['S8'].value
+            my_row = column_heading_row
+            my_column = 1
+
+            while my_column <= sc_last_data_column:
+                self.sc_column_heading[self.sc_worksheet.cell(row=my_row, column=my_column).value] = my_column
+                self.column_width[self.sc_worksheet.cell(row=my_row, column=my_column).value] = self.sc_worksheet.column_dimensions[get_column_letter(my_column)].width
+                self.column_width["NRD " + self.sc_worksheet.cell(row=my_row, column=my_column).value] = self.sc_worksheet.column_dimensions[get_column_letter(my_column)].width
+                my_column += 1
+
+            if "Months till Expire" in self.column_width:
+                self.column_width["Months Till Expire"] = self.column_width["Months till Expire"]
+                self.column_width["NRD Months Till Expire"] = self.column_width["Months till Expire"]
+
+            my_row = 9
+
+        if use_sam_report:
+            #use pandas
+            try:
+                sc_ontap = pd.read_excel("sam.xlsx", sheetname="Service Contracts", header=2, dtype='object')
+                sc_ontap["Contract Status"] = sc_ontap["Months till Expire"]
+                sc_ontap["Contract Extended Date"] = sc_ontap["Contract End Date"]
+                sc_ontap["Serial Number"] = sc_ontap["Serial Number"].astype("object")
+                sc_ontap.fillna("", inplace=True)
+                sc_ontap = sc_ontap.drop(sc_ontap.columns[0], axis=1)
+                sc_eseries = pd.read_excel("sam2.xlsx", sheetname="Service Contracts", header=2, dtype='object')
+                sc_eseries["Contract Status"] = sc_eseries["Months till Expire"]
+                sc_eseries["Contract Extended Date"] = sc_eseries["Contract End Date"]
+                sc_eseries["Serial Number"] = sc_eseries["Serial Number"].astype("object")
+                sc_eseries.fillna("", inplace=True)
+                sc_eseries = sc_eseries.drop(sc_eseries.columns[0], axis=1)
+                sc = sc_ontap.append(sc_eseries).drop_duplicates(keep='first')
+            except:
+                sc = pd.read_excel("sam.xlsx", sheetname="Service Contracts", header=2, dtype='object')
+                sc["Contract Status"] = sc["Months till Expire"]
+                sc["Contract Extended Date"] = sc["Contract End Date"]
+                sc["Serial Number"] = sc["Serial Number"].astype("object")
+                sc.fillna("", inplace=True)
+
+            header_row = list(sc.columns)
+            data = []
+            count = 0
+            for index, row in sc.iterrows():
+                count += 1
+                if count % 1000 == 0:
+                    print_to_log("Current row: " + str(count))
+                record = {}
+                for key in header_row:
+                    record[key]=row[key]
+                if record[serial_text]:
+                    if "Months till Expire" in record:
+                        record["Months Till Expire"] = record["Months till Expire"]
+                    data.append(record)
+        else:
+            print_to_log("Reading " + short_s_c_filename)
+            try:
+                wb = load_workbook(short_s_c_filename, read_only=True)
             except:
                 print_to_log("Problem reading Service Contracts file, please try downloading a new version before running IB Scrub again")
                 return
-        else:
-            print_to_log("Missing SC report " + short_s_c_filename)
-            return
-
-        self.sc_worksheet = self.sc_workbook.get_sheet_by_name(data_sheet_name)
-
-        if "Service Contracts" in self.sc_worksheet.cell(sc_report_name_cell).value and \
-            self.sc_worksheet['A8'].value == "Serial Number Owner Company" and \
-            self.sc_worksheet['F8'].value == "Serial Number" and \
-                (self.sc_worksheet['S8'].value == "HW Service Level Status" or self.sc_worksheet['S8'].value == "Support Edge Offering Status"):
-            print_to_log("Reading Service Contracts report")
-        else:
-            print_to_log("Unexpected Service Contracts, scrub cancelled")
-            return
-        hw_service_level_status_text = self.sc_worksheet['S8'].value
-        my_row = column_heading_row
-        my_column = 1
-
-        while my_column <= sc_last_data_column:
-            self.sc_column_heading[self.sc_worksheet.cell(row=my_row, column=my_column).value] = my_column
-            self.column_width[self.sc_worksheet.cell(row=my_row, column=my_column).value] = self.sc_worksheet.column_dimensions[get_column_letter(my_column)].width
-            self.column_width["NRD " + self.sc_worksheet.cell(row=my_row, column=my_column).value] = self.sc_worksheet.column_dimensions[get_column_letter(my_column)].width
-            my_column += 1
-
-        my_row = 9
-
-        print_to_log("Reading " + short_s_c_filename)
-        try:
-            wb = load_workbook(short_s_c_filename, read_only=True)
-        except:
-            print_to_log("Problem reading Service Contracts file, please try downloading a new version before running IB Scrub again")
-            return
-        sheet = wb.active
-        rows = sheet.rows
-        header_row = [cell.value for cell in next(rows)]
-        while header_row[0] != company_text:
+            sheet = wb.active
+            rows = sheet.rows
             header_row = [cell.value for cell in next(rows)]
-        data = []
-        count = 0
-        for row in rows:
-            count += 1
-            if count % 1000 == 0:
-                print_to_log("Current row: " + str(count))
-            record = {}
-            for key, cell in zip(header_row, row):
-                record[key] = cell.value
-            data.append(record)
+            while header_row[0] != company_text:
+                header_row = [cell.value for cell in next(rows)]
+            data = []
+            count = 0
+            for row in rows:
+                count += 1
+                if count % 1000 == 0:
+                    print_to_log("Current row: " + str(count))
+                record = {}
+                for key, cell in zip(header_row, row):
+                    record[key] = cell.value
+                data.append(record)
 
         for row in data:
             if debug_it:
@@ -539,7 +780,7 @@ class IbDetails:
                 my_row += 1
                 continue
 
-            serial = row[serial_text].strip()
+            serial = str(row[serial_text]).strip()
 
             if not serial:
                 print_to_log("Blank serial on SC report row " + str(my_row))
@@ -569,7 +810,6 @@ class IbDetails:
                                 print_to_log("Replacing NRD contract " + str(system.nrd_months_till_expire) + " with " + str(row[months_till_expire_text]))
                                 system.set_nrd_service_contract_id(row[service_contract_id_text])
                                 system.set_nrd_contract_end_date(row[contract_end_date_text])
-                                system.set_nrd_contract_extended_date(row[contract_extended_date_text])
                                 system.set_nrd_months_till_expire(row[months_till_expire_text])
                                 system.set_nrd_hw_service_level_status(row[hw_service_level_status_text])
                         except:
@@ -579,7 +819,6 @@ class IbDetails:
                             print_to_log("New NRD contracts for serial " + system.serial)
                         system.set_nrd_service_contract_id(row[service_contract_id_text])
                         system.set_nrd_contract_end_date(row[contract_end_date_text])
-                        system.set_nrd_contract_extended_date(row[contract_extended_date_text])
                         system.set_nrd_months_till_expire(row[months_till_expire_text])
                         system.set_nrd_hw_service_level_status(row[hw_service_level_status_text])
                 elif service_type == "HW" or service_type == '' or service_type is None:
@@ -589,18 +828,17 @@ class IbDetails:
                     my_service_contract_id = row[service_contract_id_text]
                     my_warranty_end_date = row[warranty_end_date_text]
                     my_contract_end_date = row[contract_end_date_text]
-                    my_contract_extended_date = row[contract_extended_date_text]
                     new_contract = HardwareContract(row[service_level_text],
                                                     my_warranty_end_date,
                                                     "HW",
                                                     row[response_profile_text],
                                                     my_service_contract_id,
                                                     my_contract_end_date,
-                                                    my_contract_extended_date,
-                                                    row[months_till_expire_text],
-                                                    row[contract_status_text],
+                                                    row[months_till_expire_text],  # check
+                                                    #row[contract_status_text], # removed
                                                     row[hw_service_level_status_text],
-                                                    row[entitlement_status_text])
+                                                    row[entitlement_status_text],
+                                                    serial)
                     # print_to_log("New contract: " + str(new_contract))
                     previous_contract = HardwareContract(system.service_level,
                                                          system.warranty_end_date,
@@ -608,11 +846,11 @@ class IbDetails:
                                                          system.response_profile,
                                                          system.service_contract_id,
                                                          system.contract_end_date,
-                                                         system.contract_extended_date,
                                                          system.months_till_expire,
-                                                         system.contract_status,
+                                                         #removed from SAM - system.contract_status,
                                                          system.hw_service_level_status,
-                                                         system.sc_entitlement_status)
+                                                         system.sc_entitlement_status,
+                                                         serial)
                     # print_to_log("Previous contract: " + str(previous_contract))
                     previous_longest_contract = HardwareContract(system.longest_service_level,
                                                                  system.longest_warranty_end_date,
@@ -620,11 +858,11 @@ class IbDetails:
                                                                  system.longest_response_profile,
                                                                  system.longest_service_contract_id,
                                                                  system.longest_contract_end_date,
-                                                                 system.longest_contract_extended_date,
                                                                  system.longest_months_till_expire,
-                                                                 system.longest_contract_status,
+                                                                 #removed from SAM - system.longest_contract_status,
                                                                  system.longest_hw_service_level_status,
-                                                                 system.longest_sc_entitlement_status)
+                                                                 system.longest_sc_entitlement_status,
+                                                                 serial)
 
                     # print_to_log("Calculating effective contract for " + system.serial)
                     effective_contract = new_contract & previous_contract
@@ -639,14 +877,16 @@ class IbDetails:
                     system.set_response_profile(effective_contract.response_profile)
                     system.set_service_contract_id(effective_contract.service_contract_id)
                     system.set_contract_end_date(effective_contract.contract_end_date)
-                    system.set_contract_extended_date(effective_contract.contract_extended_date)
                     system.set_months_till_expire(effective_contract.months_till_expire)
-                    system.set_contract_status(effective_contract.contract_status)
+                    # removed from SAM -system.set_contract_status(effective_contract.contract_status)
                     system.set_hw_service_level_status(effective_contract.hw_service_level_status)
                     system.set_sc_entitlement_status(effective_contract.sc_entitlement_status)
 
                     # print_to_log("checking longer contract for serial " + system.serial)
                     longer_contract = new_contract | previous_longest_contract
+                    if longer_contract is None:
+                        longer_contract = effective_contract
+                        print_to_log("Warning: could not determine longest contract using effective contract")
                     if previous_longest_contract and longer_contract != previous_longest_contract:
                         print_to_log("Longest Contract " + str(previous_longest_contract) + " replaced by " + str(longer_contract) + " for serial " + system.serial)
                     # print_to_log("Effective contract " + str(effective_contract))
@@ -657,9 +897,8 @@ class IbDetails:
                     system.set_longest_response_profile(longer_contract.response_profile)
                     system.set_longest_service_contract_id(longer_contract.service_contract_id)
                     system.set_longest_contract_end_date(longer_contract.contract_end_date)
-                    system.set_longest_contract_extended_date(longer_contract.contract_extended_date)
                     system.set_longest_months_till_expire(longer_contract.months_till_expire)
-                    system.set_longest_contract_status(longer_contract.contract_status)
+                    #removed from SAM -system.set_longest_contract_status(longer_contract.contract_status)
                     system.set_longest_hw_service_level_status(longer_contract.hw_service_level_status)
                     system.set_longest_sc_entitlement_status(longer_contract.sc_entitlement_status)
 
@@ -669,7 +908,6 @@ class IbDetails:
                     # system.set_response_profile(csv_row[response_profile_text])
                     # system.set_service_contract_id(csv_row[service_contract_id_text])
                     # system.set_contract_end_date(csv_row[contract_end_date_text])
-                    # system.set_contract_extended_date(csv_row[contract_extended_date_text])
                     # system.set_months_till_expire(csv_row[months_till_expire_text])
                     # system.set_contract_status(csv_row[contract_status_text])
                     # system.set_hw_service_level_status(csv_row[hw_service_level_status_text])
@@ -686,7 +924,6 @@ class IbDetails:
                     system = self.flash_by_serial[serial]
                     system.set_nrd_service_contract_id(row[service_contract_id_text])
                     system.set_nrd_contract_end_date(row[contract_end_date_text])
-                    system.set_nrd_contract_extended_date(row[contract_extended_date_text])
                     system.set_nrd_months_till_expire(row[months_till_expire_text])
                     system.set_nrd_hw_service_level_status(row[hw_service_level_status_text])
                 else:
@@ -698,9 +935,8 @@ class IbDetails:
                     system.set_response_profile(row[response_profile_text])
                     system.set_service_contract_id(row[service_contract_id_text])
                     system.set_contract_end_date(row[contract_end_date_text])
-                    system.set_contract_extended_date(row[contract_extended_date_text])
                     system.set_months_till_expire(row[months_till_expire_text])
-                    system.set_contract_status(row[contract_status_text])
+                    #removed from SAM -system.set_contract_status(row[contract_status_text])
                     system.set_hw_service_level_status(row[hw_service_level_status_text])
                     system.set_sc_entitlement_status(row[entitlement_status_text])
 
@@ -815,6 +1051,8 @@ class IbDetails:
                         # print_to_log(str(system.software_service_end_date))
                         system.set_reseller(row[reseller_text])
                         # print_to_log(system.reseller)
+                        system.set_solidfire_tag(row[solidfire_tag_text])
+                        # print_to_log(system.solidfire_tag_text)
                     my_row += 1
             else:
                 print_to_log("Unexpected SCORE report format, skipping")
@@ -861,7 +1099,7 @@ class IbDetails:
         ws = wb.get_sheet_by_name('Sheet')
         ws.title = "IB Scrub"
 
-        ws['A1'] = "IB Team Installed Base Scrub v1.6.7"
+        ws['A1'] = "IB Team Installed Base Scrub v1.9"
         # ws['A1'].font = Font(name='Arial', b=True, color=Color(rgb='FF0066CC'), sz=12.0)
         ws['A1'].font = self.title_font
 
@@ -882,8 +1120,6 @@ class IbDetails:
                 columns_to_exclude.append(solution_text)
                 print(cluster_name_text, file=f)
                 columns_to_exclude.append(cluster_name_text)
-                print(cluster_serial_text, file=f)
-                columns_to_exclude.append(cluster_serial_text)
                 print(cluster_uuid_text, file=f)
                 columns_to_exclude.append(cluster_uuid_text)
                 print(first_eos_date_text, file=f)
@@ -937,7 +1173,6 @@ class IbDetails:
             (num_disks_text, "num_disks", "0"),
             (nrd_service_contract_id_text, "nrd_service_contract_id", "General"),
             (nrd_contract_end_date_text, "nrd_contract_end_date", "mmm dd, yyyy"),
-            (nrd_contract_extended_date_text, "nrd_contract_extended_date", "mmm dd, yyyy"),
             (nrd_months_till_expire_text, "nrd_months_till_expire", "0"),
             (nrd_hw_service_level_status_text, "nrd_hw_service_level_status", "General"),
             (warranty_end_date_text, "warranty_end_date", "mmm dd, yyyy"),
@@ -945,7 +1180,6 @@ class IbDetails:
             (response_profile_text, "response_profile", "General"),
             (service_contract_id_text, "service_contract_id", "General"),
             (contract_end_date_text, "contract_end_date", "mmm dd, yyyy"),
-            (contract_extended_date_text, "contract_extended_date", "mmm dd, yyyy"),
             (months_till_expire_text, "months_till_expire", "0"),
             # (contract_status_text, "contract_status", "General"),
             (hw_service_level_status_text, "hw_service_level_status", "General"),
@@ -955,8 +1189,8 @@ class IbDetails:
             ("Longest " + response_profile_text, "longest_response_profile", "General"),
             ("Longest " + service_contract_id_text, "longest_service_contract_id", "General"),
             ("Longest " + contract_end_date_text, "longest_contract_end_date", "mmm dd, yyyy"),
-            ("Longest " + contract_extended_date_text, "longest_contract_extended_date", "mmm dd, yyyy"),
-            ("Longest " + months_till_expire_text, "longest_months_till_expire", "0")
+            ("Longest " + months_till_expire_text, "longest_months_till_expire", "0"),
+            (solidfire_tag_text, "solidfire_tag", "General") #From SCORE Report
         ]
 
         attribute_text = {}
@@ -1009,7 +1243,42 @@ class IbDetails:
             if column_heading in columns_to_exclude:
                 print_to_log("Excluding column " + column_heading)
                 continue
-            cell = ws.cell(row=my_row, column=my_column, value=column_heading)
+                #Betsy overrides column headings
+            if column_heading == "Contract End Date":
+                cell = ws.cell(row=my_row, column=my_column, value="Best Service Level End Date")
+            elif column_heading == "Response Profile":
+                cell = ws.cell(row=my_row, column=my_column, value="Best Response Profile")
+            elif column_heading == "Contract Extended Date":
+                cell = ws.cell(row=my_row, column=my_column, value="Best Contract Extend Date")
+            elif column_heading == "Months Till Expire":
+                cell = ws.cell(row=my_row, column=my_column, value="Best Months Till Expire")
+            elif column_heading == "Service Contract ID":
+                cell = ws.cell(row=my_row, column=my_column, value="Best Service Contract ID")
+            elif column_heading == "Cluster Serial No":
+                cell = ws.cell(row=my_row, column=my_column, value="Cluster Serial Number")
+            elif column_heading == "Last ASUP":
+                cell = ws.cell(row=my_row, column=my_column, value="ASUP Last Generate Date")
+            elif column_heading == "Product Family":
+                cell = ws.cell(row=my_row, column=my_column, value="Installed At Product Family")
+            elif column_heading == "Model":
+                cell = ws.cell(row=my_row, column=my_column, value="Installed At Platform")
+            elif column_heading == "Controller EOS":
+                cell = ws.cell(row=my_row, column=my_column, value="Controller EOS Date")
+            elif column_heading == "EOS PVR":
+                cell = ws.cell(row=my_row, column=my_column, value="EOS PVR Flag")
+            elif column_heading == "PVR End":
+                cell = ws.cell(row=my_row, column=my_column, value="PVR End Date")
+            elif column_heading == "First EOS":
+                cell = ws.cell(row=my_row, column=my_column, value="First EOS Date")
+            elif column_heading == "System Age Years":
+                cell = ws.cell(row=my_row, column=my_column, value="System Age in Years")
+            elif column_heading == "HA Pair":
+                cell = ws.cell(row=my_row, column=my_column, value="HA Pair Flag")
+            elif column_heading == "Serial Number Owner":
+                cell = ws.cell(row=my_row, column=my_column, value="Serial Number Owner Company")
+            else:
+                cell = ws.cell(row=my_row, column=my_column, value=column_heading)
+
             cell.font = self.heading_font
             cell.alignment = self.heading_alignment
             cell.border = self.heading_border
@@ -1093,6 +1362,10 @@ class IbDetails:
 
         print_to_log("Merging reports...")
 
+        # Betsy adding the count of serials at each site, group, and owner 5.3
+        count_by_site = {}
+        count_by_group = {}
+        count_by_owner = {}
         expired_list = []
         bad_response_profile_list = []
         count = 0
@@ -1109,6 +1382,18 @@ class IbDetails:
             sites.add(system.site)
             if system.hostname.lower() != "unknown" and not system.group:
                 systems_missing_group.append(system)
+        # Betsy this counts the number of serials for each group
+            if system.group not in count_by_group:
+                count_by_group[system.group] = 0
+            count_by_group[system.group] += 1
+        # Betsy This counts the number of serials under each owner
+            if system.owner not in count_by_owner:
+                count_by_owner[system.owner] = 0
+            count_by_owner[system.owner] += 1
+        # Betsy - This counts the number of serials at each site
+            if system.site not in count_by_site:
+               count_by_site[system.site] = 0
+            count_by_site[system.site] += 1
 
             # if 'off' in system.asup_status.lower() and system.product_family not in ["BROCADE", "FLASH CACHE"]:
             if 'off' in system.asup_status.lower() and system.product_family in ["FILER", "E-SERIES", "V-SERIES"]:
@@ -1129,9 +1414,9 @@ class IbDetails:
             if system.hw_service_level_status.lower() != "expired" and system.months_till_expire:
                 if system.months_till_expire == 1 or system.months_till_expire == 2:
                     months_till_expire_count["Less than 3mos:"] += 1
-                elif system.months_till_expire < 6:
+                elif system.months_till_expire < 6 and system.months_till_expire >2:
                     months_till_expire_count["Less than 6mos:"] += 1
-                elif system.months_till_expire < 12:
+                elif system.months_till_expire < 12 and system.months_till_expire > 6:
                     months_till_expire_count["Less than 12mos:"] += 1
 
             if system.nrd_service_contract_id:
@@ -1292,7 +1577,7 @@ class IbDetails:
         print_to_log("Generating summary...")
 
         summary = wb.create_sheet(title="Summary", index=0)
-        summary['A1'] = "IB Team Installed Base Scrub v1.6.7 Summary"
+        summary['A1'] = "IB Team Installed Base Scrub v1.8 Summary"
         summary['A1'].font = self.title_font
 
         my_row = 3
@@ -1441,6 +1726,7 @@ class IbDetails:
                 previous_systems = pickle.load(f)
 
         # check for new and dropped systems
+        # Betsy Added a row that tells you how many serials you have added
         if os.path.isfile("serials-" + last_week + ".txt"):
             print_to_log("Comparing to history from serials-" + last_week + ".txt")
             new_serials = set()
@@ -1459,6 +1745,7 @@ class IbDetails:
             if new_serials:
                 my_row += 1
                 summary.cell(row=my_row, column=1, value="New systems:").font = Font(underline='single')
+                summary.cell(row=my_row, column=2, value=len(new_serials)).font = Font(underline='single')
                 my_row += 1
                 my_column = 1
                 for column_heading, attr_name, format_string in exception_column_list:
@@ -1493,6 +1780,7 @@ class IbDetails:
             if dropped_serials:
                 my_row += 1
                 summary.cell(row=my_row, column=1, value="Dropped systems:").font = Font(underline='single')
+                summary.cell(row=my_row, column=2, value=len(dropped_serials)).font = Font(underline='single')
                 my_row += 1
                 my_column = 1
                 for column_heading, attr_name, format_string in exception_column_list:
@@ -1555,9 +1843,11 @@ class IbDetails:
             if new_owners:
                 my_row += 1
                 summary.cell(row=my_row, column=1, value="New Owner Companies:").font = Font(underline='single')
+                summary.cell(row=my_row, column=2, value="Number of serials:").font = Font(underline='single')
                 my_row += 1
                 for owner in new_owners:
                     summary.cell(row=my_row, column=1, value=owner)
+                    summary.cell(row=my_row, column=2, value=count_by_owner[owner])
                     my_row += 1
             if dropped_owners:
                 my_row += 1
@@ -1586,9 +1876,11 @@ class IbDetails:
             if new_sites:
                 my_row += 1
                 summary.cell(row=my_row, column=1, value="New Sites:").font = Font(underline='single')
+                summary.cell(row=my_row, column=2, value="Number of Serials:").font = Font(underline='single')
                 my_row += 1
                 for site in new_sites:
                     summary.cell(row=my_row, column=1, value=site)
+                    summary.cell(row=my_row, column=2, value=count_by_site[site])
                     my_row += 1
             if dropped_sites:
                 my_row += 1
@@ -1617,9 +1909,11 @@ class IbDetails:
             if new_groups:
                 my_row += 1
                 summary.cell(row=my_row, column=1, value="New Groups:").font = Font(underline='single')
+                summary.cell(row=my_row, column=2, value="Number of Serials:").font = Font(underline='single')
                 my_row += 1
                 for group in new_groups:
                     summary.cell(row=my_row, column=1, value=group)
+                    summary.cell(row=my_row, column=2, value=count_by_group[group])
                     my_row += 1
             if dropped_groups:
                 my_row += 1
@@ -1911,6 +2205,7 @@ class IbDetails:
         summary.column_dimensions['O'].width = 24
         # wb.save(filename=self.output_filename)
 
+        # Betsy add - Group Name/Product Family
         print_to_log("Checking for changes...")
         my_row += 1
         summary.cell(row=my_row, column=1, value="Changes from previous report:").font = Font(underline='single')
@@ -1919,6 +2214,10 @@ class IbDetails:
         summary.cell(row=my_row, column=my_column, value="Serial Number").font = Font(underline='single')
         my_column += 1
         summary.cell(row=my_row, column=my_column, value="Hostname").font = Font(underline='single')
+        my_column += 1
+        summary.cell(row=my_row, column=my_column, value="Product Family").font = Font(underline='single')
+        my_column += 1
+        summary.cell(row=my_row, column=my_column, value="Group Name").font = Font(underline='single')
         my_column += 1
         summary.cell(row=my_row, column=my_column, value="Field").font = Font(underline='single')
         my_column += 1
@@ -1948,6 +2247,18 @@ class IbDetails:
                         cell.fill = self.data_cell_fill
                         my_column += 1
                         cell = summary.cell(row=my_row, column=my_column, value=system.hostname)
+                        cell.font = self.data_cell_font
+                        cell.alignment = self.data_cell_alignment
+                        cell.border = self.data_cell_border
+                        cell.fill = self.data_cell_fill
+                        my_column += 1
+                        cell = summary.cell(row=my_row, column=my_column, value=system.product_family)
+                        cell.font = self.data_cell_font
+                        cell.alignment = self.data_cell_alignment
+                        cell.border = self.data_cell_border
+                        cell.fill = self.data_cell_fill
+                        my_column += 1
+                        cell = summary.cell(row=my_row, column=my_column, value=system.group)
                         cell.font = self.data_cell_font
                         cell.alignment = self.data_cell_alignment
                         cell.border = self.data_cell_border
@@ -2113,10 +2424,11 @@ class IbDetails:
                 summary.cell(row=row_iter, column=col_iter).fill = self.data_cell_fill
 
         # wb.save(filename=self.output_filename)
-        if os.path.isfile("flash.xlsx"):
-            print_to_log("Reading flash.xlsx")
+        flash_file = "flash.xlsx"
+        if os.path.isfile(flash_file):
+            print_to_log("Reading flash file")
             try:
-                flash_wb= load_workbook("flash.xlsx", read_only=True)
+                flash_wb= load_workbook(flash_file, read_only=True)
                 need_flash_asups = False
                 sheet = flash_wb.active
                 rows = sheet.rows
@@ -2136,7 +2448,7 @@ class IbDetails:
                 flash_rows = len(data)
                 for row in data:
                     if debug_it:
-                        print_to_log("Parsing row " + str(my_row) + " from flash.xlsx")
+                        print_to_log("Parsing row " + str(my_row) + " from flash file")
                     if not row[serial_text]:
                         continue
                     try:
@@ -2165,7 +2477,7 @@ class IbDetails:
                     my_row += 1
 
             except:
-                print_to_log("Problem reading flash.xlsx file, please try downloading a new version before running IB Scrub again")
+                print_to_log("Problem reading flash file, please try downloading a new version before running IB Scrub again")
                 return
             flash_tab = wb.create_sheet(title="Flash")
             flash_tab['A1'] = "FlashCache and PAM Details from AutoSupports"
@@ -2187,12 +2499,11 @@ class IbDetails:
                 (response_profile_text, "response_profile", "General"),
                 (service_contract_id_text, "service_contract_id", "General"),
                 (contract_end_date_text, "contract_end_date", "mmm dd, yyyy"),
-                (contract_extended_date_text, "contract_extended_date", "mmm dd, yyyy"),
                 (months_till_expire_text, "months_till_expire", "0"),
                 (hw_service_level_status_text, "hw_service_level_status", "General")
             ]
 
-            flash_columns = ["service_level", "entitlement_status", "warranty_end_date", "service_type", "response_profile", "service_contract_id", "contract_end_date", "contract_extended_date", "months_till_expire", "hw_service_level_status", "site"]
+            flash_columns = ["service_level", "entitlement_status", "warranty_end_date", "service_type", "response_profile", "service_contract_id", "contract_end_date", "months_till_expire", "hw_service_level_status", "site"]
 
             my_column = 1
             my_row = 2
@@ -2305,7 +2616,7 @@ class IbDetails:
                             cell.fill = self.data_cell_fill
                             my_row += 1
         else:
-            print_to_log("Missing flash.xlsx, please download IB Scrub Flash Details report from http://sam-reporting.hq.netapp.com/reports/asupcheck/")
+            print_to_log("Missing flash file please use naming convention flash.xlsx or download IB Scrub Flash Details report from http://sam-reporting.hq.netapp.com/reports/asupcheck/")
         wb.save(filename=self.output_filename)
 
         print_to_log("Finished generating " + self.output_filename)
@@ -2419,7 +2730,7 @@ class IbDetails:
         try:
             with open(installed_base_hostname_list_filename, encoding='utf-8') as f:
                 lines = f.read().splitlines()
-            
+
             use_ib_hostnames = True
             self.check_groups = False
             for line in lines:

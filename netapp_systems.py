@@ -1,10 +1,26 @@
 from my_logging import print_to_log
+import datetime
 
 debug_it = 0
 
 
-class HardwareContract:
+def to_date(my_value):
+    if isinstance(my_value, datetime.datetime):
+        return my_value
+    elif isinstance(my_value, int):
+        print_to_log("Converting " + str(my_value) + " to date")
+        return datetime.datetime.strptime("Jan 1, 1900", "%b %d, %Y") + datetime.timedelta(days=my_value)
+    else:
+        try:
+            return datetime.datetime.strptime(my_value, "%b %d, %Y")
+        except (ValueError, TypeError):
+            print_to_log("Could not convert '" + str(my_value) + "' to date")
+            return ''
 
+
+class HardwareContract:
+    # Betsy working on skip_entitlements_check for these products 5/3
+    products_to_exclude = []
     response_profiles_list = []
 
     def __init__(self, service_level,
@@ -13,11 +29,11 @@ class HardwareContract:
                  response_profile,
                  service_contract_id,
                  contract_end_date,
-                 contract_extended_date,
                  months_till_expire,
-                 contract_status,
+                 #removed from SAM -contract_status,
                  hw_service_level_status,
-                 sc_entitlement_status):
+                 sc_entitlement_status,
+                 serial=''):
 
         self.service_level = service_level
         self.warranty_end_date = warranty_end_date
@@ -25,15 +41,15 @@ class HardwareContract:
         self.response_profile = response_profile
         self.service_contract_id = service_contract_id
         self.contract_end_date = contract_end_date
-        self.contract_extended_date = contract_extended_date
+        self.serial = serial
         try:
             self.months_till_expire = int(months_till_expire)
         except (ValueError, TypeError):
             if debug_it:
                 print_to_log("Unexpected months_till_expire value: " + str(months_till_expire))
-                print_to_log("Using 0 for months_till_expire")
+                print_to_log("Using 0 for months_till_expire for serial " + str(self.serial))
             self.months_till_expire = 0
-        self.contract_status = contract_status
+            #removed from SAM -self.contract_status = contract_status
         self.hw_service_level_status = hw_service_level_status
         self.sc_entitlement_status = sc_entitlement_status
 
@@ -42,12 +58,12 @@ class HardwareContract:
             if self.hw_service_level_status and len(self.hw_service_level_status) > 0:
                 return True
         except TypeError:
-            print_to_log("Strange hw service level status")
+            print_to_log("Strange hw service level status for serial " + str(self.serial))
         try:
             if self.response_profile and len(self.response_profile) > 0:
                 return True
         except TypeError:
-            print_to_log("Strange response profile")
+            print_to_log("Strange response profile for serial " + str(self.serial))
         return False
 
     def __eq__(self, other):
@@ -119,7 +135,7 @@ class HardwareContract:
                         else:
                             return other
                     except TypeError:
-                        print_to_log("Problem comparing contracts, unexpected 'months till expire', contact neil.maldonado@netapp.com")
+                        print_to_log("Problem comparing contracts, unexpected 'months till expire', contact neil.maldonado@netapp.com with serial " + str(self.serial))
                         return self
 
             except ValueError:
@@ -137,10 +153,10 @@ class HardwareContract:
                     string += other.service_type
                 if other.response_profile:
                     string += other.response_profile
-                print_to_log(string + ", contact neil.maldonado@netapp.com")
+                print_to_log(string + ", contact neil.maldonado@netapp.com with serial " + str(self.serial))
                 return self
         else:
-            print_to_log("Contract compare failed, contact neil.maldonado@netapp.com")
+            print_to_log("Contract compare failed, contact neil.maldonado@netapp.com with serial " + str(self.serial))
             print_to_log(str(self))
             print_to_log(str(other))
             return self
@@ -175,7 +191,7 @@ class HardwareContract:
                 elif HardwareContract.response_profiles_list.index(self.response_profile) > HardwareContract.response_profiles_list.index(other.response_profile):
                     return other
                 elif HardwareContract.response_profiles_list.index(self.response_profile) == HardwareContract.response_profiles_list.index(other.response_profile):
-                    print_to_log("Duplicate contracts found for same serial, contact neil.maldonado@netapp.com")
+                    print_to_log("Duplicate contracts found for same serial, contact neil.maldonado@netapp.com with serial " + str(self.serial))
                     return self
 
             except ValueError:
@@ -193,10 +209,10 @@ class HardwareContract:
                     string += other.service_type
                 if other.response_profile:
                     string += other.response_profile
-                print_to_log(string + ", contact neil.maldonado@netapp.com")
+                print_to_log(string + ", contact neil.maldonado@netapp.com with serial " + str(self.serial))
                 return self
         else:
-            print_to_log("Contract compare failed, contact neil.maldonado@netapp.com")
+            print_to_log("Contract compare failed, contact neil.maldonado@netapp.com with serial " + str(self.serial))
             print_to_log(str(self))
             print_to_log(str(other))
             return self
@@ -246,13 +262,11 @@ class NetAppSystem:
         self.response_profile = ""
         self.service_contract_id = ""
         self.contract_end_date = ""
-        self.contract_extended_date = ""
         self.months_till_expire = ""
-        self.contract_status = ""
+        #removed from SAM -self.contract_status = ""
         self.hw_service_level_status = ""
         self.nrd_service_contract_id = ""
         self.nrd_contract_end_date = ""
-        self.nrd_contract_extended_date = ""
         self.nrd_months_till_expire = ""
         self.nrd_hw_service_level_status = ""
         self.notes = []
@@ -266,6 +280,7 @@ class NetAppSystem:
         self.shipped_date = ""
         self.software_service_end_date = ""
         self.reseller = ""
+        self.solidfire_tag = ""
         self.old_serial = ""
         self.filer_use = ""
         self.flash_list = []
@@ -275,9 +290,8 @@ class NetAppSystem:
         self.longest_response_profile = ""
         self.longest_service_contract_id = ""
         self.longest_contract_end_date = ""
-        self.longest_contract_extended_date = ""
         self.longest_months_till_expire = ""
-        self.longest_contract_status = ""
+        #removed from SAM -self.longest_contract_status = ""
         self.longest_hw_service_level_status = ""
         self.longest_sc_entitlement_status = ""
 
@@ -321,9 +335,8 @@ class NetAppSystem:
             self.response_profile,
             str(self.service_contract_id),
             str(self.contract_end_date),
-            str(self.contract_extended_date),
             str(self.months_till_expire),
-            self.contract_status,
+            #removed from SAM -self.contract_status,
             self.hw_service_level_status,
             self.account_name,
             self.end_customer,
@@ -334,6 +347,7 @@ class NetAppSystem:
             self.shipped_date,
             self.software_service_end_date,
             self.reseller,
+            self.solidfire_tag,
             self.old_serial,
             self.filer_use]
         )
@@ -386,7 +400,9 @@ class NetAppSystem:
             self.solution = ""
 
     def set_hostname(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.hostname = ""
+        elif my_value:
             self.hostname = my_value
         else:
             self.hostname = ""
@@ -429,7 +445,7 @@ class NetAppSystem:
 
     def set_asup_date(self, my_value):
         if my_value:
-            self.asup_date = my_value
+            self.asup_date = to_date(my_value)
         else:
             self.asup_date = ""
 
@@ -447,7 +463,7 @@ class NetAppSystem:
 
     def set_controller_eos_date(self, my_value):
         if my_value:
-            self.controller_eos_date = my_value
+            self.controller_eos_date = to_date(my_value)
         else:
             self.controller_eos_date = ""
 
@@ -459,13 +475,13 @@ class NetAppSystem:
 
     def set_pvr_date(self, my_value):
         if my_value:
-            self.pvr_date = my_value
+            self.pvr_date = to_date(my_value)
         else:
             self.pvr_date = ""
 
     def set_first_eos_date(self, my_value):
         if my_value:
-            self.first_eos_date = my_value
+            self.first_eos_date = to_date(my_value)
         else:
             self.first_eos_date = ""
 
@@ -487,26 +503,37 @@ class NetAppSystem:
         else:
             self.ha_pair_flag = ""
 
+    # Betsy working on skip_entitlements_check for these products 5/3
     def set_service_level(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.service_level = "entitlement not needed"
+        elif my_value:
             self.service_level = my_value
         else:
             self.service_level = ""
-
+    # Betsy working on skip_entitlements_check for these products 5/3
     def set_sc_service_level(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.sc_service_level = "entitlement not needed"
+        elif my_value:
             self.sc_service_level = my_value
         else:
             self.sc_service_level = ""
 
+    # Betsy working on skip_entitlements_check for these products 5/3
     def set_entitlement_status(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.entitlement_status = "entitlement not needed"
+        elif my_value:
             self.entitlement_status = my_value
         else:
             self.entitlement_status = ""
 
+    # Betsy working on skip_entitlements_check for these products 5/3
     def set_sc_entitlement_status(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.sc_entitlement_status = "entitlement not needed"
+        elif my_value:
             self.sc_entitlement_status = my_value
         else:
             self.sc_entitlement_status = ""
@@ -549,42 +576,46 @@ class NetAppSystem:
 
     def set_warranty_end_date(self, my_value):
         if my_value:
-            self.warranty_end_date = my_value
+            self.warranty_end_date = to_date(my_value)
         else:
             self.warranty_end_date = ""
 
     def set_service_type(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.service_type = "no entitlement needed"
+        elif my_value:
             self.service_type = my_value
         else:
             self.service_type = ""
 
     def set_response_profile(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.response_profile = "no entitlement needed"
+        elif my_value:
             self.response_profile = my_value
         else:
             self.response_profile = ""
 
     def set_service_contract_id(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.service_contract_id = "no entitlement needed"
+        elif my_value:
             self.service_contract_id = my_value
         else:
             self.service_contract_id = ""
 
     def set_contract_end_date(self, my_value):
-        if my_value:
-            self.contract_end_date = my_value
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.contract_end_date = "no entitlement needed"
+        elif my_value:
+            self.contract_end_date = to_date(my_value)
         else:
             self.contract_end_date = ""
 
-    def set_contract_extended_date(self, my_value):
-        if my_value:
-            self.contract_extended_date = my_value
-        else:
-            self.contract_extended_date = ""
-
     def set_months_till_expire(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.months_till_expire = ""
+        elif my_value:
             if type(my_value) != int:
                 try:
                     self.months_till_expire = int(my_value)
@@ -597,38 +628,42 @@ class NetAppSystem:
         else:
             self.months_till_expire = 0
 
-    def set_contract_status(self, my_value):
-        if my_value:
-            self.contract_status = my_value
-        else:
-            self.contract_status = ""
+            #removed from SAM - def set_contract_status(self, my_value):
+            #removed from SAM -if self.product_family in HardwareContract.products_to_exclude:
+            #removed from SAM - self.contract_status = "no entitlement needed"
+            #removed from SAM - elif my_value:
+            #removed from SAM -  self.contract_status = my_value
+            #removed from SAM - else:
+            #removed from SAM - self.contract_status = ""
 
     def set_hw_service_level_status(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.hw_service_level_status = "no entitlement needed"
+        elif my_value:
             self.hw_service_level_status = my_value
         else:
             self.hw_service_level_status = ""
 
     def set_nrd_service_contract_id(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.nrd_service_contract_id = "no entitlement needed"
+        elif my_value:
             self.nrd_service_contract_id = my_value
         else:
             self.nrd_service_contract_id = ""
 
     def set_nrd_contract_end_date(self, my_value):
-        if my_value:
-            self.nrd_contract_end_date = my_value
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.nrd_contract_end_date = ""
+        elif my_value:
+            self.nrd_contract_end_date = to_date(my_value)
         else:
             self.nrd_contract_end_date = ""
 
-    def set_nrd_contract_extended_date(self, my_value):
-        if my_value:
-            self.nrd_contract_extended_date = my_value
-        else:
-            self.nrd_contract_extended_date = ""
-
     def set_nrd_months_till_expire(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.nrd_months_till_expire = ""
+        elif my_value:
             if type(my_value) != int:
                 try:
                     self.nrd_months_till_expire = int(my_value)
@@ -642,7 +677,9 @@ class NetAppSystem:
             self.nrd_months_till_expire = 0
 
     def set_nrd_hw_service_level_status(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.nrd_hw_service_level_status = ""
+        elif my_value:
             self.nrd_hw_service_level_status = my_value
         else:
             self.nrd_hw_service_level_status = ""
@@ -694,13 +731,13 @@ class NetAppSystem:
 
     def set_shipped_date(self, my_value):
         if my_value:
-            self.shipped_date = my_value
+            self.shipped_date = to_date(my_value)
         else:
             self.shipped_date = ""
 
     def set_software_service_end_date(self, my_value):
         if my_value:
-            self.software_service_end_date = my_value
+            self.software_service_end_date = to_date(my_value)
         else:
             self.software_service_end_date = ""
 
@@ -709,6 +746,12 @@ class NetAppSystem:
             self.reseller = my_value
         else:
             self.reseller = ""
+
+    def set_solidfire_tag(self, my_value):
+        if my_value:
+            self.solidfire_tag = my_value
+        else:
+            self.solidfire_tag = ""
 
     def set_old_serial(self, my_value):
         if my_value:
@@ -723,49 +766,57 @@ class NetAppSystem:
             self.filer_use = ""
 
     def set_longest_service_level(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.longest_service_level = ""
+        elif my_value:
             self.longest_service_level = my_value
         else:
             self.longest_service_level = ""
 
     def set_longest_warranty_end_date(self, my_value):
-        if my_value:
-            self.longest_warranty_end_date = my_value
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.longest_warranty_end_date = ""
+        elif my_value:
+            self.longest_warranty_end_date = to_date(my_value)
         else:
             self.longest_warranty_end_date = ""
 
     def set_longest_service_type(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.longest_service_type = ""
+        elif my_value:
             self.longest_service_type = my_value
         else:
             self.longest_service_type = ""
 
     def set_longest_response_profile(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.longest_response_profile = ""
+        elif my_value:
             self.longest_response_profile = my_value
         else:
             self.longest_response_profile = ""
 
     def set_longest_service_contract_id(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.longest_service_contract_id = ""
+        elif my_value:
             self.longest_service_contract_id = my_value
         else:
             self.longest_service_contract_id = ""
 
     def set_longest_contract_end_date(self, my_value):
-        if my_value:
-            self.longest_contract_end_date = my_value
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.longest_contract_end_date = ""
+        elif my_value:
+            self.longest_contract_end_date = to_date(my_value)
         else:
             self.longest_contract_end_date = ""
 
-    def set_longest_contract_extended_date(self, my_value):
-        if my_value:
-            self.longest_contract_extended_date = my_value
-        else:
-            self.longest_contract_extended_date = ""
-
     def set_longest_months_till_expire(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.longest_months_till_expire = ""
+        elif my_value:
             if type(my_value) != int:
                 try:
                     self.longest_months_till_expire = int(my_value)
@@ -778,20 +829,26 @@ class NetAppSystem:
         else:
             self.longest_months_till_expire = 0
 
-    def set_longest_contract_status(self, my_value):
-        if my_value:
-            self.longest_contract_status = my_value
-        else:
-            self.longest_contract_status = ""
+        #removed from SAM - def set_longest_contract_status(self, my_value):
+            #removed from SAM -if self.product_family in HardwareContract.products_to_exclude:
+            #removed from SAM - self.longest_contract_status = ""
+            #removed from SAM - elif my_value:
+            #removed from SAM -   self.longest_contract_status = my_value
+            #removed from SAM - else:
+            #removed from SAM -  self.longest_contract_status = ""
 
     def set_longest_hw_service_level_status(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.longest_hw_service_level_status = ""
+        elif my_value:
             self.longest_hw_service_level_status = my_value
         else:
             self.longest_hw_service_level_status = ""
 
     def set_longest_sc_entitlement_status(self, my_value):
-        if my_value:
+        if self.product_family in HardwareContract.products_to_exclude:
+            self.longest_sc_entitlement_status = ""
+        elif my_value:
             self.longest_sc_entitlement_status = my_value
         else:
             self.longest_sc_entitlement_status = ""
